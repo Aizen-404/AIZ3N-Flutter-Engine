@@ -16,83 +16,53 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             git \
+            curl \
             python3 \
-            python3-pip \
-            python3-venv \
             ninja-build \
             pkg-config \
-            curl
+            clang \
+            lld
 
-      - name: Clone reFlutter
+      - name: Clone Flutter engine
         run: |
-          git clone https://github.com/ptswarm/reFlutter.git reFlutter
+          git clone https://github.com/flutter/engine.git engine
+          cd engine
+          git fetch --depth=1 origin c4cd48e186460b32d44585ce3c103271ab676355
+          git checkout c4cd48e186460b32d44585ce3c103271ab676355
 
-      - name: Install reFlutter
+      - name: Bootstrap engine
+        working-directory: engine
         run: |
-          python3 -m pip install --upgrade pip setuptools wheel
-          python3 -m pip install ./reFlutter
+          ./tools/gn --help >/dev/null || true
 
-      - name: Show environment
+      - name: Configure ARM64 release
+        working-directory: engine
         run: |
-          python3 --version
-          which python3
-          python3 -m pip show reflutter
+          ./flutter/tools/gn \
+            --runtime-mode release \
+            --android \
+            --android-cpu arm64
 
-      - name: Prepare engine
-        env:
-          HASH_PATCH: ee1eb666c76a5cb7746faf39d0b97547
-          COMMIT: c4cd48e186460b32d44585ce3c103271ab676355
+      - name: Build Flutter engine
+        working-directory: engine
         run: |
-          python3 - <<'PY'
-          import os
-          print("HASH_PATCH =", os.environ["HASH_PATCH"])
-          print("COMMIT     =", os.environ["COMMIT"])
-          PY
+          ninja -C out/android_release flutter/shell/platform/android:android
 
-      - name: Run reFlutter
-        env:
-          HASH_PATCH: ee1eb666c76a5cb7746faf39d0b97547
-          COMMIT: c4cd48e186460b32d44585ce3c103271ab676355
+      - name: Locate libflutter
         run: |
-          cd reFlutter
-          python3 -m src.__init__ \
-            -h "$HASH_PATCH" \
-            -c "$COMMIT" || true
+          find engine/out -type f -name 'libflutter.so' -print
 
-      - name: Inspect build directory
-        if: always()
+      - name: Package
         run: |
-          echo "===== REPOSITORY ====="
-          find . -maxdepth 3 -type f | head -200
+          mkdir -p artifact
 
-          echo
-          echo "===== LIBFLUTTER SEARCH ====="
-          find . -type f -name 'libflutter.so' -print
-
-          echo
-          echo "===== ENGINE ====="
-          if [ -d reFlutter/engine ]; then
-            git -C reFlutter/engine status || true
-            git -C reFlutter/engine log -1 --oneline || true
-          fi
-
-          echo
-          echo "===== BUILD OUTPUTS ====="
-          find reFlutter -type f \
-            \( -name '*.so' -o -name '*.a' -o -name 'gen_snapshot' \) \
-            -print 2>/dev/null | head -200
-
-      - name: Package result
-        if: always()
-        run: |
-          SO=$(find . -type f -name 'libflutter.so' | head -1)
+          SO=$(find engine/out -type f -name 'libflutter.so' | head -1)
 
           if [ -z "$SO" ]; then
-            echo "ERROR: libflutter.so was not produced."
+            echo "libflutter.so was not produced"
             exit 1
           fi
 
-          mkdir -p artifact
           cp "$SO" artifact/libflutter.so
 
           file artifact/libflutter.so
@@ -100,13 +70,8 @@ jobs:
 
           tar -czf AIZ3N-libflutter-arm64.tar.gz artifact
 
-      - name: Upload diagnostics
-        if: always()
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: AIZ3N-engine-diagnostics
-          path: |
-            reFlutter/
-            artifact/
-            AIZ3N-libflutter-arm64.tar.gz
-          if-no-files-found: warn
+          name: AIZ3N-libflutter-arm64
+          path: AIZ3N-libflutter-arm64.tar.gz
