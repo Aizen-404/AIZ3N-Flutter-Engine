@@ -11,57 +11,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Clone reFlutter
+      - name: Pull reFlutter builder
         run: |
-          git clone https://github.com/ptswarm/reFlutter.git reFlutter
+          docker pull ptswarm/reflutter
 
-      - name: Build reFlutter Docker image
-        working-directory: reFlutter
-        run: |
-          docker build -t aiz3n-reflutter -f Dockerfile .
-
-      - name: Build ARM64 engine
-        working-directory: reFlutter
+      - name: Run custom engine builder
         run: |
           docker run \
-            -e WAIT=1 \
+            -e WAIT=300 \
             -e x64=0 \
             -e arm=0 \
             -e HASH_PATCH=ee1eb666c76a5cb7746faf39d0b97547 \
             -e COMMIT=c4cd48e186460b32d44585ce3c103271ab676355 \
             --rm \
-            -v "$PWD:/t" \
-            aiz3n-reflutter
+            -i \
+            -v "${GITHUB_WORKSPACE}:/t" \
+            ptswarm/reflutter
 
-      - name: Inspect engine
+      - name: Inspect output
         if: always()
-        working-directory: reFlutter
         run: |
-          echo "=== engine/src ==="
-          ls -la engine/src 2>/dev/null || true
-
-          echo
-          echo "=== GN ==="
-          ls -la engine/src/flutter/tools/gn 2>/dev/null || true
-
-          echo
-          echo "=== libflutter.so ==="
-          find engine -type f -name 'libflutter.so' -print 2>/dev/null || true
-
-          echo
-          echo "=== Android ARM64 outputs ==="
-          find engine/src/out -type f \
+          echo "===== OUTPUT ====="
+          find . -type f \
             \( -name 'libflutter.so' -o -name 'gen_snapshot' \) \
-            -print 2>/dev/null || true
+            -print
 
-      - name: Package
+          echo
+          echo "===== DIRECTORIES ====="
+          find . -maxdepth 3 -type d -print | head -200
+
+      - name: Package libflutter
         run: |
-          SO=$(find reFlutter/engine -type f -name 'libflutter.so' | head -1)
+          SO=$(find . -type f -name 'libflutter.so' | head -1)
 
           if [ -z "$SO" ]; then
-            echo "ERROR: libflutter.so was not produced."
-            echo
-            echo "The complete Docker/build log above is the important part."
+            echo "ERROR: builder did not produce libflutter.so"
             exit 1
           fi
 
@@ -73,7 +57,7 @@ jobs:
 
           tar -czf AIZ3N-libflutter-arm64.tar.gz artifact
 
-      - name: Upload engine
+      - name: Upload
         if: success()
         uses: actions/upload-artifact@v4
         with:
