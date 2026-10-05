@@ -8,44 +8,46 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout
+      - name: Checkout AIZ3N project
         uses: actions/checkout@v4
 
-      - name: Pull reFlutter builder
+      - name: Clone current reFlutter
         run: |
-          docker pull ptswarm/reflutter
+          git clone --depth=1 https://github.com/Impact-I/reFlutter.git reFlutter
 
-      - name: Run custom engine builder
+      - name: Build reFlutter Docker image
+        working-directory: reFlutter
+        run: |
+          docker build -t aiz3n-reflutter -f Dockerfile .
+
+      - name: Build Flutter ARM64 engine
+        working-directory: reFlutter
         run: |
           docker run \
-            -e WAIT=300 \
+            -e WAIT=1 \
             -e x64=0 \
             -e arm=0 \
             -e HASH_PATCH=ee1eb666c76a5cb7746faf39d0b97547 \
             -e COMMIT=c4cd48e186460b32d44585ce3c103271ab676355 \
             --rm \
-            -i \
-            -v "${GITHUB_WORKSPACE}:/t" \
-            ptswarm/reflutter
+            -v "${GITHUB_WORKSPACE}/reFlutter:/t" \
+            aiz3n-reflutter
 
-      - name: Inspect output
+      - name: Locate engine
         if: always()
         run: |
-          echo "===== OUTPUT ====="
-          find . -type f \
-            \( -name 'libflutter.so' -o -name 'gen_snapshot' \) \
-            -print
+          echo "=== libflutter.so ==="
+          find reFlutter -type f -name 'libflutter.so' -print
 
-          echo
-          echo "===== DIRECTORIES ====="
-          find . -maxdepth 3 -type d -print | head -200
+          echo "=== engine directories ==="
+          find reFlutter -maxdepth 4 -type d -name 'src' -o -name 'out'
 
-      - name: Package libflutter
+      - name: Package
         run: |
-          SO=$(find . -type f -name 'libflutter.so' | head -1)
+          SO=$(find reFlutter -type f -name 'libflutter.so' | head -1)
 
           if [ -z "$SO" ]; then
-            echo "ERROR: builder did not produce libflutter.so"
+            echo "ERROR: libflutter.so was not produced."
             exit 1
           fi
 
