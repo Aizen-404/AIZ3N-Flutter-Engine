@@ -15,10 +15,38 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/Impact-I/reFlutter.git reFlutter
 
+      - name: Patch Perfetto dependency before build
+        working-directory: reFlutter
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          dockerfile = Path("Dockerfile")
+          data = dockerfile.read_text()
+
+          old = "gclient sync"
+          new = "sed -i 's#https://fuchsia.googlesource.com/third_party/android.googlesource.com/platform/external/perfetto#https://android.googlesource.com/platform/external/perfetto#g' /engine/DEPS && gclient sync"
+
+          if old not in data:
+              raise SystemExit(
+                  "ERROR: Could not find 'gclient sync' in reFlutter Dockerfile."
+              )
+
+          data = data.replace(old, new, 1)
+          dockerfile.write_text(data)
+
+          print("=== Patched Dockerfile ===")
+          print(new)
+          PY
+
+          grep -n -C 3 "gclient sync" Dockerfile
+
       - name: Build reFlutter Docker image
         working-directory: reFlutter
         run: |
-          docker build -t aiz3n-reflutter -f Dockerfile .
+          docker build \
+            -t aiz3n-reflutter \
+            -f Dockerfile .
 
       - name: Build Flutter ARM64 engine
         working-directory: reFlutter
@@ -40,10 +68,14 @@ jobs:
           find reFlutter -type f -name 'libflutter.so' -print
 
           echo "=== engine directories ==="
-          find reFlutter -maxdepth 4 -type d -name 'src' -o -name 'out'
+          find reFlutter -maxdepth 6 \
+            \( -type d -name 'src' -o -type d -name 'out' \) \
+            -print
 
       - name: Package
         run: |
+          set -e
+
           SO=$(find reFlutter -type f -name 'libflutter.so' | head -1)
 
           if [ -z "$SO" ]; then
@@ -51,11 +83,21 @@ jobs:
             exit 1
           fi
 
+          echo "Found:"
+          echo "$SO"
+
           mkdir -p artifact
+
           cp "$SO" artifact/libflutter.so
 
+          echo "=== ELF ==="
           file artifact/libflutter.so
+
+          echo "=== ELF header ==="
           readelf -h artifact/libflutter.so
+
+          echo "=== SHA256 ==="
+          sha256sum artifact/libflutter.so
 
           tar -czf AIZ3N-libflutter-arm64.tar.gz artifact
 
@@ -65,3 +107,4 @@ jobs:
         with:
           name: AIZ3N-libflutter-arm64
           path: AIZ3N-libflutter-arm64.tar.gz
+          if-no-files-found: error
