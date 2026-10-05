@@ -6,105 +6,283 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    env:
+      ENGINE_COMMIT: c4cd48e186460b32d44585ce3c103271ab676355
+      SNAPSHOT_HASH: ee1eb666c76a5cb7746faf39d0b97547
 
     steps:
       - name: Checkout AIZ3N project
         uses: actions/checkout@v4
 
-      - name: Clone current reFlutter
+      - name: Install build dependencies
         run: |
-          git clone --depth=1 https://github.com/Impact-I/reFlutter.git reFlutter
+          set -euxo pipefail
 
-      - name: Patch Perfetto dependency before build
-        working-directory: reFlutter
+          sudo apt-get update
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git \
+            git-lfs \
+            curl \
+            wget \
+            python3 \
+            python3-pip \
+            python3-venv \
+            ninja-build \
+            clang \
+            lld \
+            pkg-config \
+            unzip \
+            zip \
+            openjdk-11-jdk \
+            file \
+            build-essential
+
+      - name: Install depot_tools
         run: |
+          set -euxo pipefail
+
+          git clone --depth=1 \
+            https://chromium.googlesource.com/chromium/tools/depot_tools.git \
+            "$HOME/depot_tools"
+
+          echo "$HOME/depot_tools" >> "$GITHUB_PATH"
+
+          export PATH="$HOME/depot_tools:$PATH"
+
+          gclient --version
+
+      - name: Clone exact Flutter engine source
+        run: |
+          set -euxo pipefail
+
+          rm -rf "$HOME/flutter-engine"
+
+          git clone \
+            https://github.com/flutter/flutter.git \
+            "$HOME/flutter-engine"
+
+          cd "$HOME/flutter-engine"
+
+          git fetch origin "$ENGINE_COMMIT"
+
+          git checkout --detach "$ENGINE_COMMIT"
+
+          echo "=== ENGINE COMMIT ==="
+          git rev-parse HEAD
+
+          test "$(git rev-parse HEAD)" = "$ENGINE_COMMIT"
+
+      - name: Patch exact Perfetto dependency
+        run: |
+          set -euxo pipefail
+
+          cd "$HOME/flutter-engine"
+
+          echo "=== BEFORE PATCH ==="
+          grep -n -A4 -B2 "src/third_party/perfetto" DEPS
+
           python3 - <<'PY'
           from pathlib import Path
 
-          dockerfile = Path("Dockerfile")
-          data = dockerfile.read_text()
+          p = Path("DEPS")
+          s = p.read_text()
 
-          old = "gclient sync"
-          new = "sed -i 's#https://fuchsia.googlesource.com/third_party/android.googlesource.com/platform/external/perfetto#https://android.googlesource.com/platform/external/perfetto#g' /engine/DEPS && gclient sync"
+          old = '''  'src/third_party/perfetto':
+      Var('fuchsia_git') + "/third_party/android.googlesource.com/platform/external/perfetto"
+      + '@' + Var('dart_perfetto_rev'),'''
 
-          if old not in data:
+          new = '''  'src/third_party/perfetto':
+      'https://android.googlesource.com/platform/external/perfetto'
+      + '@' + Var('dart_perfetto_rev'),'''
+
+          if old not in s:
               raise SystemExit(
-                  "ERROR: Could not find 'gclient sync' in reFlutter Dockerfile."
+                  "ERROR: Expected Perfetto DEPS block was not found."
               )
 
-          data = data.replace(old, new, 1)
-          dockerfile.write_text(data)
+          s = s.replace(old, new, 1)
 
-          print("=== Patched Dockerfile ===")
-          print(new)
+          allowed_old = "  'fuchsia.googlesource.com',"
+          allowed_new = (
+              "  'fuchsia.googlesource.com',\n"
+              "  'android.googlesource.com',"
+          )
+
+          if allowed_new not in s:
+              if allowed_old not in s:
+                  raise SystemExit(
+                      "ERROR: fuchsia.googlesource.com allowed_hosts entry not found."
+                  )
+              s = s.replace(allowed_old, allowed_new, 1)
+
+          p.write_text(s)
           PY
 
-          grep -n -C 3 "gclient sync" Dockerfile
+          echo "=== AFTER PATCH ==="
+          grep -n -A4 -B2 "src/third_party/perfetto" DEPS
 
-      - name: Build reFlutter Docker image
-        working-directory: reFlutter
-        run: |
-          docker build \
-            -t aiz3n-reflutter \
-            -f Dockerfile .
+          echo "=== CHECK ANDROID HOST ==="
+          grep -n "android.googlesource.com" DEPS
 
-      - name: Build Flutter ARM64 engine
-        working-directory: reFlutter
-        run: |
-          docker run \
-            -e WAIT=1 \
-            -e x64=0 \
-            -e arm=0 \
-            -e HASH_PATCH=ee1eb666c76a5cb7746faf39d0b97547 \
-            -e COMMIT=c4cd48e186460b32d44585ce3c103271ab676355 \
-            --rm \
-            -v "${GITHUB_WORKSPACE}/reFlutter:/t" \
-            aiz3n-reflutter
-
-      - name: Locate engine
-        if: always()
-        run: |
-          echo "=== libflutter.so ==="
-          find reFlutter -type f -name 'libflutter.so' -print
-
-          echo "=== engine directories ==="
-          find reFlutter -maxdepth 6 \
-            \( -type d -name 'src' -o -type d -name 'out' \) \
-            -print
-
-      - name: Package
-        run: |
-          set -e
-
-          SO=$(find reFlutter -type f -name 'libflutter.so' | head -1)
-
-          if [ -z "$SO" ]; then
-            echo "ERROR: libflutter.so was not produced."
+          echo "=== CHECK OLD BROKEN URL ==="
+          if grep -n \
+            "fuchsia.googlesource.com/third_party/android.googlesource.com/platform/external/perfetto" \
+            DEPS; then
+            echo "ERROR: Broken Perfetto URL still exists."
             exit 1
           fi
 
-          echo "Found:"
-          echo "$SO"
+          echo "Perfetto patch verified."
 
-          mkdir -p artifact
+      - name: Create gclient configuration
+        run: |
+          set -euxo pipefail
 
-          cp "$SO" artifact/libflutter.so
+          rm -rf "$HOME/flutter-work"
 
-          echo "=== ELF ==="
-          file artifact/libflutter.so
+          mkdir -p "$HOME/flutter-work"
 
-          echo "=== ELF header ==="
-          readelf -h artifact/libflutter.so
+          cat > "$HOME/flutter-work/.gclient" <<EOF2
+          solutions = [
+            {
+              "managed": False,
+              "name": "src/flutter",
+              "url": "$HOME/flutter-engine",
+              "custom_deps": {},
+              "deps_file": "DEPS",
+              "safesync_url": "",
+            },
+          ]
+          EOF2
+
+          cat "$HOME/flutter-work/.gclient"
+
+      - name: Sync engine dependencies
+        run: |
+          set -euxo pipefail
+
+          export PATH="$HOME/depot_tools:$PATH"
+
+          cd "$HOME/flutter-work"
+
+          echo "=== STARTING GCLIENT SYNC ==="
+
+          gclient sync \
+            --no-history \
+            --nohooks \
+            --verbose
+
+      - name: Verify dependency sync
+        run: |
+          set -euxo pipefail
+
+          test -d "$HOME/flutter-work/src/flutter"
+          test -d "$HOME/flutter-work/src/third_party/perfetto"
+          test -d "$HOME/flutter-work/src/third_party/dart"
+
+          echo "=== FLUTTER ==="
+          cd "$HOME/flutter-work/src/flutter"
+          git rev-parse HEAD
+
+          test "$(git rev-parse HEAD)" = "$ENGINE_COMMIT"
+
+          echo "=== PERFETTO ==="
+          cd "$HOME/flutter-work/src/third_party/perfetto"
+          git rev-parse HEAD
+
+          echo "=== DART ==="
+          cd "$HOME/flutter-work/src/third_party/dart"
+          git rev-parse HEAD
+
+      - name: Run engine hooks
+        run: |
+          set -euxo pipefail
+
+          export PATH="$HOME/depot_tools:$PATH"
+
+          cd "$HOME/flutter-work"
+
+          gclient runhooks
+
+      - name: Configure Android ARM64 release build
+        run: |
+          set -euxo pipefail
+
+          export PATH="$HOME/depot_tools:$PATH"
+
+          cd "$HOME/flutter-work/src"
+
+          ./flutter/tools/gn \
+            --no-goma \
+            --android \
+            --android-cpu=arm64 \
+            --runtime-mode=release
+
+      - name: Build libflutter.so
+        run: |
+          set -euxo pipefail
+
+          export PATH="$HOME/depot_tools:$PATH"
+
+          cd "$HOME/flutter-work/src"
+
+          ninja \
+            -C out/android_release_arm64 \
+            flutter
+
+      - name: Verify libflutter.so
+        run: |
+          set -euxo pipefail
+
+          SO="$HOME/flutter-work/src/out/android_release_arm64/lib.stripped/libflutter.so"
+
+          if [ ! -f "$SO" ]; then
+            echo "ERROR: libflutter.so was not produced."
+            echo "Searching for any libflutter.so:"
+            find "$HOME/flutter-work" -type f -name 'libflutter.so' -print
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/artifact"
+
+          cp "$SO" "$GITHUB_WORKSPACE/artifact/libflutter.so"
+
+          echo "=== FILE ==="
+          file "$GITHUB_WORKSPACE/artifact/libflutter.so"
+
+          echo "=== ELF HEADER ==="
+          readelf -h "$GITHUB_WORKSPACE/artifact/libflutter.so"
+
+          echo "=== BUILD ID ==="
+          readelf -n "$GITHUB_WORKSPACE/artifact/libflutter.so" | grep -A2 "Build ID" || true
+
+          echo "=== MACHINE ==="
+          readelf -h "$GITHUB_WORKSPACE/artifact/libflutter.so" | grep -E "Class|Machine|Type"
+
+          echo "=== SIZE ==="
+          ls -lh "$GITHUB_WORKSPACE/artifact/libflutter.so"
 
           echo "=== SHA256 ==="
-          sha256sum artifact/libflutter.so
+          sha256sum "$GITHUB_WORKSPACE/artifact/libflutter.so"
 
-          tar -czf AIZ3N-libflutter-arm64.tar.gz artifact
+      - name: Package artifact
+        run: |
+          set -euxo pipefail
 
-      - name: Upload
-        if: success()
+          cd artifact
+
+          tar -czf \
+            "$GITHUB_WORKSPACE/AIZ3N-libflutter-arm64.tar.gz" \
+            libflutter.so
+
+      - name: Upload libflutter.so
         uses: actions/upload-artifact@v4
         with:
           name: AIZ3N-libflutter-arm64
-          path: AIZ3N-libflutter-arm64.tar.gz
+          path: |
+            artifact/libflutter.so
+            AIZ3N-libflutter-arm64.tar.gz
           if-no-files-found: error
