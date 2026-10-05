@@ -15,57 +15,98 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            git \
             python3 \
             python3-pip \
             python3-venv \
-            git \
-            curl \
             ninja-build \
-            pkg-config
+            pkg-config \
+            curl
 
       - name: Clone reFlutter
         run: |
-          git clone --depth=1 https://github.com/ptswarm/reFlutter.git reFlutter
+          git clone https://github.com/ptswarm/reFlutter.git reFlutter
 
-      - name: Install reFlutter with Python 3
+      - name: Install reFlutter
         run: |
           python3 -m pip install --upgrade pip setuptools wheel
           python3 -m pip install ./reFlutter
 
-      - name: Verify Python
+      - name: Show environment
         run: |
           python3 --version
-          python3 -c "import sys; print(sys.executable)"
+          which python3
           python3 -m pip show reflutter
 
-      - name: Build ARM64 engine
+      - name: Prepare engine
         env:
           HASH_PATCH: ee1eb666c76a5cb7746faf39d0b97547
           COMMIT: c4cd48e186460b32d44585ce3c103271ab676355
         run: |
+          python3 - <<'PY'
+          import os
+          print("HASH_PATCH =", os.environ["HASH_PATCH"])
+          print("COMMIT     =", os.environ["COMMIT"])
+          PY
+
+      - name: Run reFlutter
+        env:
+          HASH_PATCH: ee1eb666c76a5cb7746faf39d0b97547
+          COMMIT: c4cd48e186460b32d44585ce3c103271ab676355
+        run: |
+          cd reFlutter
           python3 -m src.__init__ \
             -h "$HASH_PATCH" \
-            -c "$COMMIT"
+            -c "$COMMIT" || true
 
-      - name: Find libflutter.so
+      - name: Inspect build directory
+        if: always()
         run: |
-          echo "=== libflutter.so ==="
+          echo "===== REPOSITORY ====="
+          find . -maxdepth 3 -type f | head -200
+
+          echo
+          echo "===== LIBFLUTTER SEARCH ====="
           find . -type f -name 'libflutter.so' -print
 
-      - name: Package
-        run: |
-          mkdir -p artifact
+          echo
+          echo "===== ENGINE ====="
+          if [ -d reFlutter/engine ]; then
+            git -C reFlutter/engine status || true
+            git -C reFlutter/engine log -1 --oneline || true
+          fi
 
-          find . -type f -name 'libflutter.so' \
-            -exec cp {} artifact/libflutter.so \;
+          echo
+          echo "===== BUILD OUTPUTS ====="
+          find reFlutter -type f \
+            \( -name '*.so' -o -name '*.a' -o -name 'gen_snapshot' \) \
+            -print 2>/dev/null | head -200
+
+      - name: Package result
+        if: always()
+        run: |
+          SO=$(find . -type f -name 'libflutter.so' | head -1)
+
+          if [ -z "$SO" ]; then
+            echo "ERROR: libflutter.so was not produced."
+            exit 1
+          fi
+
+          mkdir -p artifact
+          cp "$SO" artifact/libflutter.so
 
           file artifact/libflutter.so
           readelf -h artifact/libflutter.so
 
           tar -czf AIZ3N-libflutter-arm64.tar.gz artifact
 
-      - name: Upload
+      - name: Upload diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: AIZ3N-libflutter-arm64
-          path: AIZ3N-libflutter-arm64.tar.gz
+          name: AIZ3N-engine-diagnostics
+          path: |
+            reFlutter/
+            artifact/
+            AIZ3N-libflutter-arm64.tar.gz
+          if-no-files-found: warn
