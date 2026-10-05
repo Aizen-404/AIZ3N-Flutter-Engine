@@ -1,4 +1,4 @@
-name: AIZ3N Flutter Engine
+name: Build GoReSym ARM64
 
 on:
   workflow_dispatch:
@@ -6,266 +6,32 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
-
-    env:
-      ENGINE_COMMIT: c4cd48e186460b32d44585ce3c103271ab676355
-      SNAPSHOT_HASH: ee1eb666c76a5cb7746faf39d0b97547
 
     steps:
-      - name: Checkout AIZ3N project
+      - name: Checkout GoReSym
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Build ARM64
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: 0
         run: |
-          set -euxo pipefail
+          go build -o GoReSym-linux-arm64 .
 
-          sudo apt-get update
-
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            git \
-            git-lfs \
-            curl \
-            wget \
-            python3 \
-            python3-pip \
-            python3-venv \
-            ninja-build \
-            clang \
-            lld \
-            pkg-config \
-            unzip \
-            zip \
-            openjdk-11-jdk \
-            file \
-            build-essential
-
-      - name: Install depot_tools
+      - name: Verify binary
         run: |
-          set -euxo pipefail
-
-          git clone --depth=1 \
-            https://chromium.googlesource.com/chromium/tools/depot_tools.git \
-            "$HOME/depot_tools"
-
-          echo "$HOME/depot_tools" >> "$GITHUB_PATH"
-
-          export PATH="$HOME/depot_tools:$PATH"
-
-          gclient --version
-
-      - name: Prepare engine workspace
-        run: |
-          set -euxo pipefail
-
-          export PATH="$HOME/depot_tools:$PATH"
-
-          rm -rf "$HOME/engine"
-
-          mkdir -p "$HOME/engine"
-
-          cat > "$HOME/engine/.gclient" <<EOF2
-          solutions = [
-            {
-              "managed": False,
-              "name": "src/flutter",
-              "url": "https://github.com/flutter/engine.git",
-              "custom_deps": {},
-              "deps_file": "DEPS",
-              "safesync_url": "",
-            },
-          ]
-          EOF2
-
-          cat "$HOME/engine/.gclient"
-
-      - name: Fetch exact Flutter engine
-        run: |
-          set -euxo pipefail
-
-          export PATH="$HOME/depot_tools:$PATH"
-
-          cd "$HOME/engine"
-
-          gclient sync \
-            --revision "src/flutter@${ENGINE_COMMIT}" \
-            --no-history \
-            --nohooks \
-            --verbose
-
-      - name: Verify exact engine commit
-        run: |
-          set -euxo pipefail
-
-          cd "$HOME/engine/src/flutter"
-
-          echo "=== ENGINE COMMIT ==="
-          git rev-parse HEAD
-
-          test "$(git rev-parse HEAD)" = "$ENGINE_COMMIT"
-
-          echo "Exact Flutter Engine commit verified."
-
-      - name: Patch Perfetto dependency
-        run: |
-          set -euxo pipefail
-
-          cd "$HOME/engine/src/flutter"
-
-          echo "=== PERFETTO BEFORE ==="
-          grep -n -A4 -B2 "src/third_party/perfetto" DEPS
-
-          python3 -c 'from pathlib import Path; p=Path("DEPS"); s=p.read_text(); old="  '\''src/third_party/perfetto'\'':\n    Var('\''fuchsia_git'\'') + \"/third_party/android.googlesource.com/platform/external/perfetto\"\n    + '\''@'\'' + Var('\''dart_perfetto_rev'\'') ,"; old=old.replace("rev'') ,","rev'') ,"); print("Checking DEPS..."); print("OLD BLOCK FOUND:", old in s); s=s.replace(old,"  '\''src/third_party/perfetto'\'':\n    '\''https://android.googlesource.com/platform/external/perfetto'\''\n    + '\''@'\'' + Var('\''dart_perfetto_rev'\'') ,",1); s=s.replace("  '\''fuchsia.googlesource.com'\'',","  '\''fuchsia.googlesource.com'\'',\n  '\''android.googlesource.com'\'',",1) if "  '\''android.googlesource.com'\''" not in s else s; p.write_text(s)'
-
-          echo "=== PERFETTO AFTER ==="
-          grep -n -A4 -B2 "src/third_party/perfetto" DEPS
-
-          echo "=== ANDROID HOST ==="
-          grep -n "android.googlesource.com" DEPS
-
-          echo "=== VERIFY OLD URL IS GONE ==="
-
-          if grep -q \
-            "fuchsia.googlesource.com/third_party/android.googlesource.com/platform/external/perfetto" \
-            DEPS; then
-            echo "ERROR: OLD PERFETTO URL STILL EXISTS"
-            exit 1
-          fi
-
-          echo "Perfetto dependency patch verified."
-
-      - name: Sync engine dependencies
-        run: |
-          set -euxo pipefail
-
-          export PATH="$HOME/depot_tools:$PATH"
-
-          cd "$HOME/engine"
-
-          echo "=== GCLIENT SYNC ==="
-
-          gclient sync \
-            --no-history \
-            --nohooks \
-            --verbose
-
-      - name: Verify dependencies
-        run: |
-          set -euxo pipefail
-
-          test -d "$HOME/engine/src/third_party/perfetto"
-          test -d "$HOME/engine/src/third_party/dart"
-          test -d "$HOME/engine/src/flutter"
-
-          echo "=== PERFETTO ==="
-          cd "$HOME/engine/src/third_party/perfetto"
-          git rev-parse HEAD
-
-          echo "=== DART ==="
-          cd "$HOME/engine/src/third_party/dart"
-          git rev-parse HEAD
-
-          echo "=== ENGINE ==="
-          cd "$HOME/engine/src/flutter"
-          git rev-parse HEAD
-
-          test "$(git rev-parse HEAD)" = "$ENGINE_COMMIT"
-
-          echo "All dependencies verified."
-
-      - name: Run engine hooks
-        run: |
-          set -euxo pipefail
-
-          export PATH="$HOME/depot_tools:$PATH"
-
-          cd "$HOME/engine"
-
-          gclient runhooks
-
-      - name: Configure ARM64 release build
-        run: |
-          set -euxo pipefail
-
-          export PATH="$HOME/depot_tools:$PATH"
-
-          cd "$HOME/engine/src"
-
-          ./flutter/tools/gn \
-            --no-goma \
-            --android \
-            --android-cpu=arm64 \
-            --runtime-mode=release
-
-      - name: Build libflutter.so
-        run: |
-          set -euxo pipefail
-
-          export PATH="$HOME/depot_tools:$PATH"
-
-          cd "$HOME/engine/src"
-
-          ninja \
-            -C out/android_release_arm64 \
-            flutter
-
-      - name: Verify libflutter.so
-        run: |
-          set -euxo pipefail
-
-          SO="$HOME/engine/src/out/android_release_arm64/lib.stripped/libflutter.so"
-
-          echo "=== SEARCHING FOR LIBFLUTTER ==="
-
-          find "$HOME/engine/src/out" \
-            -type f \
-            -name "libflutter.so" \
-            -print
-
-          if [ ! -f "$SO" ]; then
-            echo "ERROR: libflutter.so was not produced."
-            exit 1
-          fi
-
-          mkdir -p "$GITHUB_WORKSPACE/artifact"
-
-          cp "$SO" "$GITHUB_WORKSPACE/artifact/libflutter.so"
-
-          echo "=== FILE ==="
-          file "$GITHUB_WORKSPACE/artifact/libflutter.so"
-
-          echo "=== ELF HEADER ==="
-          readelf -h "$GITHUB_WORKSPACE/artifact/libflutter.so"
-
-          echo "=== MACHINE ==="
-          readelf -h "$GITHUB_WORKSPACE/artifact/libflutter.so" \
-            | grep -E "Class|Machine|Type"
-
-          echo "=== BUILD ID ==="
-          readelf -n "$GITHUB_WORKSPACE/artifact/libflutter.so" \
-            | grep -A2 "Build ID" || true
-
-          echo "=== SIZE ==="
-          ls -lh "$GITHUB_WORKSPACE/artifact/libflutter.so"
-
-          echo "=== SHA256 ==="
-          sha256sum "$GITHUB_WORKSPACE/artifact/libflutter.so"
-
-      - name: Package
-        run: |
-          set -euxo pipefail
-
-          cd artifact
-
-          tar -czf \
-            "$GITHUB_WORKSPACE/AIZ3N-libflutter-arm64.tar.gz" \
-            libflutter.so
-
-      - name: Upload libflutter.so
+          file GoReSym-linux-arm64
+          chmod +x GoReSym-linux-arm64
+          ./GoReSym-linux-arm64 -about
+
+      - name: Upload ARM64 binary
         uses: actions/upload-artifact@v4
         with:
-          name: AIZ3N-libflutter-arm64
-          path: |
-            artifact/libflutter.so
-            AIZ3N-libflutter-arm64.tar.gz
-          if-no-files-found: error
+          name: GoReSym-linux-arm64
+          path: GoReSym-linux-arm64
