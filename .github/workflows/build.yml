@@ -1,4 +1,4 @@
-name: Build AIZ3N Flutter Engine
+name: AIZ3N Flutter Engine
 
 on:
   workflow_dispatch:
@@ -8,48 +8,45 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout builder
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Clone reFlutter
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git curl python3 ninja-build pkg-config
+          git clone --depth=1 https://github.com/ptswarm/reFlutter.git
 
-      - name: Clone reFlutter builder
+      - name: Pull builder
         run: |
-          git clone --depth=1 https://github.com/ptswarm/reFlutter.git reFlutter
-
-      - name: Build Docker image
-        run: |
-          cd reFlutter
-          docker build -t aiz3n-reflutter -f Dockerfile .
+          docker pull ptswarm/reflutter
 
       - name: Build ARM64 engine
-        env:
-          SNAPSHOT_HASH: ee1eb666c76a5cb7746faf39d0b97547
         run: |
+          cd reFlutter
           docker run \
-            -e WAIT=1 \
+            -e WAIT=300 \
             -e x64=0 \
             -e arm=0 \
-            -e HASH_PATCH="$SNAPSHOT_HASH" \
-            -e COMMIT="$ENGINE_COMMIT" \
+            -e HASH_PATCH=ee1eb666c76a5cb7746faf39d0b97547 \
+            -e COMMIT=c4cd48e186460b32d44585ce3c103271ab676355 \
             --rm \
+            -i \
             -v "$PWD:/t" \
-            aiz3n-reflutter
+            ptswarm/reflutter
 
-      - name: Locate libflutter.so
+      - name: Find libflutter.so
         run: |
+          echo "=== Searching for libflutter.so ==="
           find . -type f -name 'libflutter.so' -print
 
-      - name: Package result
+      - name: Package
         run: |
           mkdir -p artifact
           find . -type f -name 'libflutter.so' -exec cp {} artifact/libflutter.so \;
+          file artifact/libflutter.so
+          readelf -h artifact/libflutter.so | head -20
           tar -czf AIZ3N-libflutter-arm64.tar.gz artifact
 
-      - name: Upload engine
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: AIZ3N-libflutter-arm64
