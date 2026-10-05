@@ -16,7 +16,7 @@ jobs:
       - name: Checkout AIZ3N project
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           set -euxo pipefail
 
@@ -54,103 +54,22 @@ jobs:
 
           gclient --version
 
-      - name: Clone exact Flutter engine source
+      - name: Prepare engine workspace
         run: |
           set -euxo pipefail
 
-          rm -rf "$HOME/flutter-engine"
+          export PATH="$HOME/depot_tools:$PATH"
 
-          git clone \
-            https://github.com/flutter/flutter.git \
-            "$HOME/flutter-engine"
+          rm -rf "$HOME/engine"
 
-          cd "$HOME/flutter-engine"
+          mkdir -p "$HOME/engine"
 
-          git fetch origin "$ENGINE_COMMIT"
-
-          git checkout --detach "$ENGINE_COMMIT"
-
-          echo "=== ENGINE COMMIT ==="
-          git rev-parse HEAD
-
-          test "$(git rev-parse HEAD)" = "$ENGINE_COMMIT"
-
-      - name: Patch exact Perfetto dependency
-        run: |
-          set -euxo pipefail
-
-          cd "$HOME/flutter-engine"
-
-          echo "=== BEFORE PATCH ==="
-          grep -n -A4 -B2 "src/third_party/perfetto" DEPS
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path("DEPS")
-          s = p.read_text()
-
-          old = '''  'src/third_party/perfetto':
-      Var('fuchsia_git') + "/third_party/android.googlesource.com/platform/external/perfetto"
-      + '@' + Var('dart_perfetto_rev'),'''
-
-          new = '''  'src/third_party/perfetto':
-      'https://android.googlesource.com/platform/external/perfetto'
-      + '@' + Var('dart_perfetto_rev'),'''
-
-          if old not in s:
-              raise SystemExit(
-                  "ERROR: Expected Perfetto DEPS block was not found."
-              )
-
-          s = s.replace(old, new, 1)
-
-          allowed_old = "  'fuchsia.googlesource.com',"
-          allowed_new = (
-              "  'fuchsia.googlesource.com',\n"
-              "  'android.googlesource.com',"
-          )
-
-          if allowed_new not in s:
-              if allowed_old not in s:
-                  raise SystemExit(
-                      "ERROR: fuchsia.googlesource.com allowed_hosts entry not found."
-                  )
-              s = s.replace(allowed_old, allowed_new, 1)
-
-          p.write_text(s)
-          PY
-
-          echo "=== AFTER PATCH ==="
-          grep -n -A4 -B2 "src/third_party/perfetto" DEPS
-
-          echo "=== CHECK ANDROID HOST ==="
-          grep -n "android.googlesource.com" DEPS
-
-          echo "=== CHECK OLD BROKEN URL ==="
-          if grep -n \
-            "fuchsia.googlesource.com/third_party/android.googlesource.com/platform/external/perfetto" \
-            DEPS; then
-            echo "ERROR: Broken Perfetto URL still exists."
-            exit 1
-          fi
-
-          echo "Perfetto patch verified."
-
-      - name: Create gclient configuration
-        run: |
-          set -euxo pipefail
-
-          rm -rf "$HOME/flutter-work"
-
-          mkdir -p "$HOME/flutter-work"
-
-          cat > "$HOME/flutter-work/.gclient" <<EOF2
+          cat > "$HOME/engine/.gclient" <<EOF2
           solutions = [
             {
               "managed": False,
               "name": "src/flutter",
-              "url": "$HOME/flutter-engine",
+              "url": "https://github.com/flutter/engine.git",
               "custom_deps": {},
               "deps_file": "DEPS",
               "safesync_url": "",
@@ -158,7 +77,62 @@ jobs:
           ]
           EOF2
 
-          cat "$HOME/flutter-work/.gclient"
+          cat "$HOME/engine/.gclient"
+
+      - name: Fetch exact Flutter engine
+        run: |
+          set -euxo pipefail
+
+          export PATH="$HOME/depot_tools:$PATH"
+
+          cd "$HOME/engine"
+
+          gclient sync \
+            --revision "src/flutter@${ENGINE_COMMIT}" \
+            --no-history \
+            --nohooks \
+            --verbose
+
+      - name: Verify exact engine commit
+        run: |
+          set -euxo pipefail
+
+          cd "$HOME/engine/src/flutter"
+
+          echo "=== ENGINE COMMIT ==="
+          git rev-parse HEAD
+
+          test "$(git rev-parse HEAD)" = "$ENGINE_COMMIT"
+
+          echo "Exact Flutter Engine commit verified."
+
+      - name: Patch Perfetto dependency
+        run: |
+          set -euxo pipefail
+
+          cd "$HOME/engine/src/flutter"
+
+          echo "=== PERFETTO BEFORE ==="
+          grep -n -A4 -B2 "src/third_party/perfetto" DEPS
+
+          python3 -c 'from pathlib import Path; p=Path("DEPS"); s=p.read_text(); old="  '\''src/third_party/perfetto'\'':\n    Var('\''fuchsia_git'\'') + \"/third_party/android.googlesource.com/platform/external/perfetto\"\n    + '\''@'\'' + Var('\''dart_perfetto_rev'\'') ,"; old=old.replace("rev'') ,","rev'') ,"); print("Checking DEPS..."); print("OLD BLOCK FOUND:", old in s); s=s.replace(old,"  '\''src/third_party/perfetto'\'':\n    '\''https://android.googlesource.com/platform/external/perfetto'\''\n    + '\''@'\'' + Var('\''dart_perfetto_rev'\'') ,",1); s=s.replace("  '\''fuchsia.googlesource.com'\'',","  '\''fuchsia.googlesource.com'\'',\n  '\''android.googlesource.com'\'',",1) if "  '\''android.googlesource.com'\''" not in s else s; p.write_text(s)'
+
+          echo "=== PERFETTO AFTER ==="
+          grep -n -A4 -B2 "src/third_party/perfetto" DEPS
+
+          echo "=== ANDROID HOST ==="
+          grep -n "android.googlesource.com" DEPS
+
+          echo "=== VERIFY OLD URL IS GONE ==="
+
+          if grep -q \
+            "fuchsia.googlesource.com/third_party/android.googlesource.com/platform/external/perfetto" \
+            DEPS; then
+            echo "ERROR: OLD PERFETTO URL STILL EXISTS"
+            exit 1
+          fi
+
+          echo "Perfetto dependency patch verified."
 
       - name: Sync engine dependencies
         run: |
@@ -166,36 +140,38 @@ jobs:
 
           export PATH="$HOME/depot_tools:$PATH"
 
-          cd "$HOME/flutter-work"
+          cd "$HOME/engine"
 
-          echo "=== STARTING GCLIENT SYNC ==="
+          echo "=== GCLIENT SYNC ==="
 
           gclient sync \
             --no-history \
             --nohooks \
             --verbose
 
-      - name: Verify dependency sync
+      - name: Verify dependencies
         run: |
           set -euxo pipefail
 
-          test -d "$HOME/flutter-work/src/flutter"
-          test -d "$HOME/flutter-work/src/third_party/perfetto"
-          test -d "$HOME/flutter-work/src/third_party/dart"
+          test -d "$HOME/engine/src/third_party/perfetto"
+          test -d "$HOME/engine/src/third_party/dart"
+          test -d "$HOME/engine/src/flutter"
 
-          echo "=== FLUTTER ==="
-          cd "$HOME/flutter-work/src/flutter"
+          echo "=== PERFETTO ==="
+          cd "$HOME/engine/src/third_party/perfetto"
+          git rev-parse HEAD
+
+          echo "=== DART ==="
+          cd "$HOME/engine/src/third_party/dart"
+          git rev-parse HEAD
+
+          echo "=== ENGINE ==="
+          cd "$HOME/engine/src/flutter"
           git rev-parse HEAD
 
           test "$(git rev-parse HEAD)" = "$ENGINE_COMMIT"
 
-          echo "=== PERFETTO ==="
-          cd "$HOME/flutter-work/src/third_party/perfetto"
-          git rev-parse HEAD
-
-          echo "=== DART ==="
-          cd "$HOME/flutter-work/src/third_party/dart"
-          git rev-parse HEAD
+          echo "All dependencies verified."
 
       - name: Run engine hooks
         run: |
@@ -203,17 +179,17 @@ jobs:
 
           export PATH="$HOME/depot_tools:$PATH"
 
-          cd "$HOME/flutter-work"
+          cd "$HOME/engine"
 
           gclient runhooks
 
-      - name: Configure Android ARM64 release build
+      - name: Configure ARM64 release build
         run: |
           set -euxo pipefail
 
           export PATH="$HOME/depot_tools:$PATH"
 
-          cd "$HOME/flutter-work/src"
+          cd "$HOME/engine/src"
 
           ./flutter/tools/gn \
             --no-goma \
@@ -227,7 +203,7 @@ jobs:
 
           export PATH="$HOME/depot_tools:$PATH"
 
-          cd "$HOME/flutter-work/src"
+          cd "$HOME/engine/src"
 
           ninja \
             -C out/android_release_arm64 \
@@ -237,12 +213,17 @@ jobs:
         run: |
           set -euxo pipefail
 
-          SO="$HOME/flutter-work/src/out/android_release_arm64/lib.stripped/libflutter.so"
+          SO="$HOME/engine/src/out/android_release_arm64/lib.stripped/libflutter.so"
+
+          echo "=== SEARCHING FOR LIBFLUTTER ==="
+
+          find "$HOME/engine/src/out" \
+            -type f \
+            -name "libflutter.so" \
+            -print
 
           if [ ! -f "$SO" ]; then
             echo "ERROR: libflutter.so was not produced."
-            echo "Searching for any libflutter.so:"
-            find "$HOME/flutter-work" -type f -name 'libflutter.so' -print
             exit 1
           fi
 
@@ -256,11 +237,13 @@ jobs:
           echo "=== ELF HEADER ==="
           readelf -h "$GITHUB_WORKSPACE/artifact/libflutter.so"
 
-          echo "=== BUILD ID ==="
-          readelf -n "$GITHUB_WORKSPACE/artifact/libflutter.so" | grep -A2 "Build ID" || true
-
           echo "=== MACHINE ==="
-          readelf -h "$GITHUB_WORKSPACE/artifact/libflutter.so" | grep -E "Class|Machine|Type"
+          readelf -h "$GITHUB_WORKSPACE/artifact/libflutter.so" \
+            | grep -E "Class|Machine|Type"
+
+          echo "=== BUILD ID ==="
+          readelf -n "$GITHUB_WORKSPACE/artifact/libflutter.so" \
+            | grep -A2 "Build ID" || true
 
           echo "=== SIZE ==="
           ls -lh "$GITHUB_WORKSPACE/artifact/libflutter.so"
@@ -268,7 +251,7 @@ jobs:
           echo "=== SHA256 ==="
           sha256sum "$GITHUB_WORKSPACE/artifact/libflutter.so"
 
-      - name: Package artifact
+      - name: Package
         run: |
           set -euxo pipefail
 
