@@ -11,58 +11,61 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Clone reFlutter
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git \
-            curl \
-            python3 \
-            ninja-build \
-            pkg-config \
-            clang \
-            lld
+          git clone https://github.com/ptswarm/reFlutter.git reFlutter
 
-      - name: Clone Flutter engine
+      - name: Build reFlutter Docker image
+        working-directory: reFlutter
         run: |
-          git clone https://github.com/flutter/engine.git engine
-          cd engine
-          git fetch --depth=1 origin c4cd48e186460b32d44585ce3c103271ab676355
-          git checkout c4cd48e186460b32d44585ce3c103271ab676355
+          docker build -t aiz3n-reflutter -f Dockerfile .
 
-      - name: Bootstrap engine
-        working-directory: engine
+      - name: Build ARM64 engine
+        working-directory: reFlutter
         run: |
-          ./tools/gn --help >/dev/null || true
+          docker run \
+            -e WAIT=1 \
+            -e x64=0 \
+            -e arm=0 \
+            -e HASH_PATCH=ee1eb666c76a5cb7746faf39d0b97547 \
+            -e COMMIT=c4cd48e186460b32d44585ce3c103271ab676355 \
+            --rm \
+            -v "$PWD:/t" \
+            aiz3n-reflutter
 
-      - name: Configure ARM64 release
-        working-directory: engine
+      - name: Inspect engine
+        if: always()
+        working-directory: reFlutter
         run: |
-          ./flutter/tools/gn \
-            --runtime-mode release \
-            --android \
-            --android-cpu arm64
+          echo "=== engine/src ==="
+          ls -la engine/src 2>/dev/null || true
 
-      - name: Build Flutter engine
-        working-directory: engine
-        run: |
-          ninja -C out/android_release flutter/shell/platform/android:android
+          echo
+          echo "=== GN ==="
+          ls -la engine/src/flutter/tools/gn 2>/dev/null || true
 
-      - name: Locate libflutter
-        run: |
-          find engine/out -type f -name 'libflutter.so' -print
+          echo
+          echo "=== libflutter.so ==="
+          find engine -type f -name 'libflutter.so' -print 2>/dev/null || true
+
+          echo
+          echo "=== Android ARM64 outputs ==="
+          find engine/src/out -type f \
+            \( -name 'libflutter.so' -o -name 'gen_snapshot' \) \
+            -print 2>/dev/null || true
 
       - name: Package
         run: |
-          mkdir -p artifact
-
-          SO=$(find engine/out -type f -name 'libflutter.so' | head -1)
+          SO=$(find reFlutter/engine -type f -name 'libflutter.so' | head -1)
 
           if [ -z "$SO" ]; then
-            echo "libflutter.so was not produced"
+            echo "ERROR: libflutter.so was not produced."
+            echo
+            echo "The complete Docker/build log above is the important part."
             exit 1
           fi
 
+          mkdir -p artifact
           cp "$SO" artifact/libflutter.so
 
           file artifact/libflutter.so
@@ -70,7 +73,8 @@ jobs:
 
           tar -czf AIZ3N-libflutter-arm64.tar.gz artifact
 
-      - name: Upload
+      - name: Upload engine
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: AIZ3N-libflutter-arm64
