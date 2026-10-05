@@ -1,0 +1,56 @@
+name: Build AIZ3N Flutter Engine
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl python3 ninja-build pkg-config
+
+      - name: Clone reFlutter builder
+        run: |
+          git clone --depth=1 https://github.com/ptswarm/reFlutter.git reFlutter
+
+      - name: Build Docker image
+        run: |
+          cd reFlutter
+          docker build -t aiz3n-reflutter -f Dockerfile .
+
+      - name: Build ARM64 engine
+        env:
+          SNAPSHOT_HASH: ee1eb666c76a5cb7746faf39d0b97547
+        run: |
+          docker run \
+            -e WAIT=1 \
+            -e x64=0 \
+            -e arm=0 \
+            -e HASH_PATCH="$SNAPSHOT_HASH" \
+            -e COMMIT="$ENGINE_COMMIT" \
+            --rm \
+            -v "$PWD:/t" \
+            aiz3n-reflutter
+
+      - name: Locate libflutter.so
+        run: |
+          find . -type f -name 'libflutter.so' -print
+
+      - name: Package result
+        run: |
+          mkdir -p artifact
+          find . -type f -name 'libflutter.so' -exec cp {} artifact/libflutter.so \;
+          tar -czf AIZ3N-libflutter-arm64.tar.gz artifact
+
+      - name: Upload engine
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIZ3N-libflutter-arm64
+          path: AIZ3N-libflutter-arm64.tar.gz
